@@ -183,7 +183,7 @@ if __name__ == '__main__':
         freeSurfer_bet(args.root_dir, args.out_dir, args.part)
     if args.mode == "fs_file":
         print("running FreeSurfer bet!")
-        in_file = "../data/version_mix/fold1/test.txt"
+        in_file = "../../data/version_mix/fold1/test.txt"
         pathes = collect_pathes(in_file)
         print(pathes)
         for i in tqdm(pathes):

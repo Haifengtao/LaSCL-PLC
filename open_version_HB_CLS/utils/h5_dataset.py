@@ -20,7 +20,8 @@ import matplotlib.pyplot as plt
 import SimpleITK as sitk
 from tqdm import tqdm
 import json
-sys.path.append("./")
+import pdb
+sys.path.append("../../utils/")
 from utils import file_io
 from utils import img_utils
 
@@ -65,6 +66,41 @@ def save_img_h5(save_name, img, mask, label, used_z, w, h):
     z = img.shape[0]
     dataset_img.resize([used_z+z, w, h])          # 调整数据预留存储空间（可以一次性调大些）
     dataset_img[used_z: (used_z+z)] = img         # 数据被读入内存
+
+    if mask is not None:
+        if used_z == 0:
+            dataset_mask = h5f.create_dataset("mask", mask.shape, maxshape=(None, w, h), dtype='uint8')
+        else:
+            dataset_mask = h5f['mask']
+        dataset_mask.resize([used_z + z, w, h])
+        dataset_mask[used_z:(used_z + z)] = mask
+
+    if label is not None:
+        if used_z == 0:
+            dataset_labels = h5f.create_dataset("label", label.shape, maxshape=(None, ), dtype='uint8')
+        else:
+            dataset_labels = h5f['label']
+        dataset_labels.resize([used_z + z])
+        dataset_labels[used_z:(used_z + z)] = label
+    used_z += z
+    h5f.close()
+    return used_z
+
+
+def save_img_h5_v2(save_name, img1, img2, mask, label, used_z, w, h):
+    if used_z == 0:
+        h5f = h5py.File(save_name, 'w')
+        dataset_img1 = h5f.create_dataset("t2f", img1.shape, maxshape=(None, w, h), dtype='float32')
+        dataset_img2 = h5f.create_dataset("t1p", img2.shape, maxshape=(None, w, h), dtype='float32')
+    else:
+        h5f = h5py.File(save_name, 'a')
+        dataset_img1 = h5f['t2f']
+        dataset_img2 = h5f['t1p']
+    z = img1.shape[0]
+    dataset_img1.resize([used_z + z, w, h])          # 调整数据预留存储空间（可以一次性调大些）
+    dataset_img2.resize([used_z + z, w, h])
+    dataset_img1[used_z: (used_z + z)] = img1         # 数据被读入内存
+    dataset_img2[used_z: (used_z + z)] = img2
 
     if mask is not None:
         if used_z == 0:
@@ -461,7 +497,7 @@ def generate_H5_dataset_seg2cls(data_dir, save_name, pad=3):
     h5f.close()
 
 
-def generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3):
+def generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=0):
     """
     generate_H5_dataset (save the raw nii files to H5 file dataset)
     A 2D dataset
@@ -482,7 +518,12 @@ def generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3):
         strs = f.readlines()
         img_list = [line.strip().split(" ")[0][3:] for line in strs]
         mask_list = [line.strip().split(" ")[1][3:] for line in strs]
-    meta_info_labeled_train = []
+        age_list = [int(line.strip().split(" ")[2]) for line in strs]
+        sex_list = [int(line.strip().split(" ")[3]) for line in strs]
+
+    index_labeled_train = []
+    age_info = []
+    sex_info = []
     labeled_used_z_train = 0
     idx = 0
 
@@ -490,10 +531,12 @@ def generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3):
     if not os.path.isdir(save_dir):
         os.makedirs(save_dir)
 
+    f = open('./data/error_mask.txt', 'w')
     for img_path, mask_path in zip(img_list, mask_list):
         # try:
-        img, img_arr = file_io.read_array_nii(img_path)
-        mask, mask_arr = file_io.read_array_nii(mask_path)
+        # pdb.set_trace()
+        img, img_arr = file_io.read_array_nii(img_path.replace('_masked_1x1x1', ''))
+        mask, mask_arr = file_io.read_array_nii(mask_path.replace('_1x1x1', ''))
         if img_arr.shape != mask_arr.shape:
             print(img_arr.shape, img_path)
 
@@ -512,55 +555,51 @@ def generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3):
                 nums = np.sum(temp)
                 if nums < max_num:
                     tumor_label = i
-            print(tumor_label, labeled_used_z_train, mask_path)
+            print('tumor label > 2 ==>', tumor_label, labeled_used_z_train, mask_path)
+        mask_arr[mask_arr != tumor_label] = 0
+        mask_arr[mask_arr == tumor_label] = 1
 
+        # 1. crop image
+        mask_indexs = np.nonzero(mask_arr)
+        minz, maxz = np.min(mask_indexs[0]), np.max(mask_indexs[0])
+        st_z, ed_z = np.max([0, minz-pad]), np.min([maxz+pad, mask_arr.shape[0]])
 
-        # 1. resample to the same spacing
-        img_itkimg_Resampled = img_utils.resize_image_itk(img, (1, 1, 1), resamplemethod=sitk.sitkLinear)
-        mask_itkimg_Resampled = img_utils.resize_image_itk(mask, (1, 1, 1), resamplemethod=sitk.sitkNearestNeighbor)
+        # 2. crop by mask
+        st, ed = [st_z, 0, 0], [ed_z, mask_arr.shape[1], mask_arr.shape[2]]
+        img_roi = img_utils.crop_img(img_arr, st, ed)
+        mask_roi = img_utils.crop_img(mask_arr, st, ed)
+
+        #
+        temp_max = np.max(np.max(img_roi, axis=1), axis=1)
+        temp_max_index = np.nonzero(temp_max)
+        img_roi = img_roi[temp_max_index[0], ...]
+        mask_roi = mask_roi[temp_max_index[0], ...]
+
+        # 3. resample to the same spacing
+        img_roi_img = sitk.GetImageFromArray(img_roi)
+        mask_roi_img = sitk.GetImageFromArray(mask_roi)
+
+        mask_roi_img.SetSpacing(mask.GetSpacing())
+        img_roi_img.SetSpacing(img.GetSpacing())
+        img_itkimg_Resampled = img_utils.resize_image_itk(img_roi_img, (1, 1, mask.GetSpacing()[2]), resamplemethod=sitk.sitkLinear)
+        mask_itkimg_Resampled = img_utils.resize_image_itk(mask_roi_img, (1, 1, mask.GetSpacing()[2]), resamplemethod=sitk.sitkNearestNeighbor)
         img_Resampled = sitk.GetArrayFromImage(img_itkimg_Resampled)
         mask_Resampled = sitk.GetArrayFromImage(mask_itkimg_Resampled)
 
-        # 2. crop image
-        mask_Resampled[mask_Resampled != tumor_label] = 0
-        mask_Resampled[mask_Resampled == tumor_label] = 1
-        mask_indexs = np.nonzero(mask_Resampled)
-        minz, maxz = np.min(mask_indexs[0]), np.max(mask_indexs[0])
-        # st_z, ed_z = np.max([0, minz - pad]), np.min([maxz + pad, mask_arr.shape[0]])
-
-        # 3. crop by mask
-        if maxz - minz + 1 < 32:
-            new_pad1 = (32-(maxz-minz+1))//2
-            new_pad2 = (32-(maxz-minz+1))-new_pad1
-            if minz - new_pad2 < 0:
-                new_pad2 = minz
-                new_pad1 = (32-(maxz-minz+1))-new_pad2
-            st_z, ed_z = np.max([0, minz - new_pad2]), np.min([maxz + new_pad1, mask_Resampled.shape[0]])
-        else:
-            new_pad1 = ((maxz-minz+1)-32)//2
-            new_pad2 = ((maxz-minz+1)-32)-new_pad1
-            st_z, ed_z = np.max([0, minz + new_pad2]), np.min([maxz - new_pad1, mask_Resampled.shape[0]])
-
-        st, ed = [st_z, 0, 0], [ed_z, mask_Resampled.shape[1], mask_Resampled.shape[2]]
-        img_roi = img_utils.crop_img(img_Resampled, st, ed)
-        mask_roi = img_utils.crop_img(mask_Resampled, st, ed)
-        if mask_roi.shape[0] != 32:
-            import pdb
-            pdb.set_trace()
         # 4. crop or padding to the same size
-        z, y, x = img_roi.shape
+        z, y, x = img_Resampled.shape
         # pad and crop
-        max_x, max_y, max_z = 256, 256, 32
+        max_x, max_y, max_z = 160, 160, None
 
         if y <= max_y:
-            cropped_img = np.pad(img_roi, ((0, 0), ((max_y - y) // 2, (max_y - y) - (max_y - y) // 2),
+            cropped_img = np.pad(img_Resampled, ((0, 0), ((max_y - y) // 2, (max_y - y) - (max_y - y) // 2),
                                                  (0, 0),), "constant", constant_values=((0, 0), (0, 0), (0, 0)))
-            cropped_mask = np.pad(mask_roi, ((0, 0), ((max_y - y) // 2, (max_y - y) - (max_y - y) // 2),
+            cropped_mask = np.pad(mask_Resampled, ((0, 0), ((max_y - y) // 2, (max_y - y) - (max_y - y) // 2),
                                                    (0, 0),), "constant", constant_values=((0, 0), (0, 0), (0, 0)))
         else:
             st_y = (y - max_y) // 2
-            cropped_img = img_roi[:, st_y:(st_y + max_y), :]
-            cropped_mask = mask_roi[:, st_y:(st_y + max_y), :]
+            cropped_img = img_Resampled[:, st_y:(st_y + max_y), :]
+            cropped_mask = mask_Resampled[:, st_y:(st_y + max_y), :]
 
         if x <= max_x:
             cropped_img = np.pad(cropped_img, ((0, 0), (0, 0),
@@ -585,15 +624,162 @@ def generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3):
             labels = np.array([3] * cropped_img.shape[0])
         else:
             raise Exception("Error path")
+
         for i in range(cropped_img.shape[0]):
             if np.max(cropped_img[i, ...]) == 0:
-                print("==>error", img_path)
+                print('==>', mask_path)
 
         # cropped_img = img_utils.normalize_0_1(cropped_img, min_intensity=0, max_intensity=3000)
-
-        save_img_h5(save_name, cropped_img, cropped_mask, labels, labeled_used_z_train, 256, 256)
+        save_img_h5(save_name, cropped_img, cropped_mask, labels, labeled_used_z_train, 160, 160)
         labeled_used_z_train = labeled_used_z_train + cropped_img.shape[0]
-        meta_info_labeled_train += [idx] * cropped_img.shape[0]
+        index_labeled_train += [idx] * cropped_img.shape[0]
+        age_info += [age_list[idx]] * cropped_img.shape[0]
+        sex_info += [sex_list[idx]] * cropped_img.shape[0]
+        idx += 1
+    h5f = h5py.File(save_name, 'a')
+    h5f.create_dataset('index_info', data=index_labeled_train)
+    h5f.create_dataset('age_info', data=age_info)
+    h5f.create_dataset('sex_info', data=sex_info)
+    h5f.close()
+    f.close()
+
+def generate_H5_dataset_seg2cls_t2f(data_dir, save_name, pad=3):
+    """
+    generate_H5_dataset (save the raw nii files to H5 file dataset)
+    A 2D dataset
+    :param data_dir: the statistics data saved at csv file.
+    :param save_name_labeled:
+    :param save_name_unlabeled:
+    :return: file "*/*.h5" saved at save_name_labeled
+    /
+    /meta_info: a json file; containing {"img_path": path, "mask_path": i[1]["labeled_T1CE"],
+                                      "raw_spacing": mask.GetSpacing(), "raw_size": mask.GetSize()}
+                and the key value is its uid.
+    /img: data [z1+z2+...+zn, 512, 512]
+    /mask: data [z1+z2+...+zn, 512, 512]
+    the data was padded or resized to (512, 512, None), == (W, H, Z)
+    and normalized to 0-1. the max value was set as 3000, and min value was set as 0.
+    """
+    with open(data_dir, 'r') as f:
+        strs = f.readlines()
+        pathes = [line.strip().split(" ") for line in strs]
+    meta_info_labeled_train = []
+    labeled_used_z_train = 0
+    idx = 0
+
+    save_dir, _ = os.path.split(save_name)
+    if not os.path.isdir(save_dir):
+        os.makedirs(save_dir)
+
+    for idx, path in enumerate(pathes):
+        # try:
+        t2f_path, t1p_path, mask_path = path
+        t2f_img, t2f_arr = file_io.read_array_nii(t2f_path)
+        t1p_img, t1p_arr = file_io.read_array_nii(t1p_path)
+        mask, mask_arr = file_io.read_array_nii(mask_path)
+        if t2f_arr.shape != t1p_arr.shape or mask_arr.shape != t1p_arr.shape:
+            print(t2f_arr.shape, t2f_path)
+            break
+
+        tumor_labels = list(np.unique(mask_arr))
+        if len(tumor_labels) == 2:
+            tumor_label = 1
+        else:
+            # print()
+            max_num = np.inf
+            tumor_label = np.max(tumor_labels)
+            for i in tumor_labels:
+                if i == 0:
+                    continue
+                temp = np.zeros(mask_arr.shape)
+                temp[mask_arr == i] = 1
+                nums = np.sum(temp)
+                if nums < max_num:
+                    tumor_label = i
+            print(tumor_label, labeled_used_z_train, mask_path)
+        mask_arr[mask_arr != tumor_label] = 0
+        mask_arr[mask_arr == tumor_label] = 1
+
+        # 1. crop image
+        mask_indexs = np.nonzero(mask_arr)
+        minz, maxz = np.min(mask_indexs[0]), np.max(mask_indexs[0])
+        st_z, ed_z = np.max([0, minz-pad]), np.min([maxz+pad, mask_arr.shape[0]])
+
+        # 2. crop by mask
+        st, ed = [st_z, 0, 0], [ed_z, mask_arr.shape[1], mask_arr.shape[2]]
+        t2f_roi = img_utils.crop_img(t2f_arr, st, ed)
+        t1p_roi = img_utils.crop_img(t1p_arr, st, ed)
+        mask_roi = img_utils.crop_img(mask_arr, st, ed)
+
+        # 3. resample to the same spacing
+        t2f_roi_img = sitk.GetImageFromArray(t2f_roi)
+        t1p_roi_img = sitk.GetImageFromArray(t1p_roi)
+        mask_roi_img = sitk.GetImageFromArray(mask_roi)
+
+        mask_roi_img.SetSpacing(mask.GetSpacing())
+        t2f_roi_img.SetSpacing(mask.GetSpacing())
+        t1p_roi_img.SetSpacing(mask.GetSpacing())
+        t2f_itkimg_Resampled = img_utils.resize_image_itk(t2f_roi_img, (1, 1, mask.GetSpacing()[2]), resamplemethod=sitk.sitkLinear)
+        t1p_itkimg_Resampled = img_utils.resize_image_itk(t1p_roi_img, (1, 1, mask.GetSpacing()[2]),
+                                                          resamplemethod=sitk.sitkLinear)
+        mask_itkimg_Resampled = img_utils.resize_image_itk(mask_roi_img, (1, 1, mask.GetSpacing()[2]), resamplemethod=sitk.sitkNearestNeighbor)
+        t2f_Resampled = sitk.GetArrayFromImage(t2f_itkimg_Resampled)
+        t1p_Resampled = sitk.GetArrayFromImage(t1p_itkimg_Resampled)
+        mask_Resampled = sitk.GetArrayFromImage(mask_itkimg_Resampled)
+
+        # 4. crop or padding to the same size
+        z, y, x = t2f_Resampled.shape
+        # pad and crop
+        max_x, max_y, max_z = 256, 256, None
+        if y <= max_y:
+            cropped_t2f = np.pad(t2f_Resampled, ((0, 0), ((max_y - y) // 2, (max_y - y) - (max_y - y) // 2),
+                                                 (0, 0),), "constant", constant_values=((0, 0), (0, 0), (0, 0)))
+            cropped_t1p = np.pad(t1p_Resampled, ((0, 0), ((max_y - y) // 2, (max_y - y) - (max_y - y) // 2),
+                                                 (0, 0),), "constant", constant_values=((0, 0), (0, 0), (0, 0)))
+            cropped_mask = np.pad(mask_Resampled, ((0, 0), ((max_y - y) // 2, (max_y - y) - (max_y - y) // 2),
+                                                   (0, 0),), "constant", constant_values=((0, 0), (0, 0), (0, 0)))
+        else:
+            st_y = (y - max_y) // 2
+            cropped_t2f = t2f_Resampled[:, st_y:(st_y + max_y), :]
+            cropped_t1p = t1p_Resampled[:, st_y:(st_y + max_y), :]
+            cropped_mask = mask_Resampled[:, st_y:(st_y + max_y), :]
+
+        if x <= max_x:
+            cropped_t2f = np.pad(cropped_t2f, ((0, 0), (0, 0),
+                                               ((max_x - x) // 2, (max_x - x) - (max_x - x) // 2)), "constant",
+                                 constant_values=((0, 0), (0, 0), (0, 0)))
+            cropped_t1p = np.pad(cropped_t1p, ((0, 0), (0, 0),
+                                               ((max_x - x) // 2, (max_x - x) - (max_x - x) // 2)), "constant",
+                                 constant_values=((0, 0), (0, 0), (0, 0)))
+            cropped_mask = np.pad(cropped_mask, ((0, 0), (0, 0),
+                                                 ((max_x - x) // 2, (max_x - x) - (max_x - x) // 2)), "constant",
+                                  constant_values=((0, 0), (0, 0), (0, 0)))
+        else:
+            st_x = (x - max_x) // 2
+            cropped_t2f = cropped_t2f[..., st_x:(st_x + max_x)]
+            cropped_t1p = cropped_t1p[..., st_x:(st_x + max_x)]
+            cropped_mask = cropped_mask[..., st_x:(st_x + max_x)]
+
+        # 5. save h5 file
+        if "hemangioblastoma" in mask_path:  # 血管细胞瘤
+            labels = np.array([1] * cropped_mask.shape[0])
+        elif "angiocavernoma" in mask_path:  # 海绵状血管瘤
+            labels = np.array([0] * cropped_mask.shape[0])
+        elif "III-IV_glioma" in mask_path:  # 3-4型胶质瘤
+            labels = np.array([2] * cropped_mask.shape[0])
+        elif "pilocytic_astrocytoma" in mask_path:
+            labels = np.array([3] * cropped_mask.shape[0])
+        else:
+            raise Exception("Error path")
+
+        for i in range(cropped_t2f.shape[0]):
+            if np.max(cropped_t2f[i, ...]) == 0:
+                print(mask_path)
+
+        # cropped_img = img_utils.normalize_0_1(cropped_img, min_intensity=0, max_intensity=3000)
+        save_img_h5_v2(save_name, cropped_t2f, cropped_t1p, cropped_mask, labels, labeled_used_z_train, 256, 256)
+        labeled_used_z_train = labeled_used_z_train + cropped_t1p.shape[0]
+        meta_info_labeled_train += [idx] * cropped_t1p.shape[0]
         idx += 1
     h5f = h5py.File(save_name, 'a')
     h5f.create_dataset('meta_info', data=meta_info_labeled_train)
@@ -601,16 +787,45 @@ def generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3):
 
 
 if __name__ == '__main__':
-    datasets = ['fold1', 'fold2', 'fold3', "fold4", "fold5"]
-    for i in datasets:
-        print("==> runningg {}".format(i))
-        # data_dir = "./data/version_final_5flod/"+i+"/test.txt"
-        # save_name = "../../dataset/tumor_cls/cross_val_h5_dataset_baisC_resmple/"+i+"_2d_final_test.h5"
-        # generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3)
+    data_dir = "./data/version_expert/train.txt"
+    save_name = "../../dataset/tumor_cls/h5_dataset_expert/2d_train.h5"
+    generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=0)
 
-        data_dir = "./data/version_final_5flod/" + i + "/train.txt"
-        save_name = "../../dataset/tumor_cls/cross_val_h5_dataset_baisC_resmple/"+i+"_2d_final_train.h5"
-        generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3)
+    data_dir = "./data/version_expert/test.txt"
+    save_name = "../../dataset/tumor_cls/h5_dataset_expert/2d_test.h5"
+    generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=0)
+
+
+
+
+
+
+# if __name__ == '__main__':
+#     datasets = ['fold1', 'fold2', 'fold3']
+#     for i in datasets[:1]:
+#         print("==> runningggg {}".format(i))
+#         data_dir = "../data/version_T2F_5flod/"+i+"/test.txt"
+#         save_name = "../../../dataset/tumor_cls/cross_val_h5_dataset_T2F_5fold/"+i+"_2d_final_test.h5"
+#         generate_H5_dataset_seg2cls_t2f(data_dir, save_name, pad=1)
+#
+#         data_dir = "../data/version_T2F_5flod/" + i + "/train.txt"
+#         save_name = "../../../dataset/tumor_cls/cross_val_h5_dataset_T2F_5fold/"+i+"_2d_final_train.h5"
+#         generate_H5_dataset_seg2cls_t2f(data_dir, save_name, pad=1)
+
+
+# if __name__ == '__main__':
+#     datasets = ['fold1', 'fold2', 'fold3', "fold4"]
+#     for i in datasets[:1]:
+#         print("==> runningg {}".format(i))
+#         data_dir = "./data/version_final_val/"+i+"/test.txt"
+#         save_name = "../../dataset/tumor_cls/cross_val_h5_dataset_baisC/"+i+"_2d_final_test_v2.h5"
+#         generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3)
+#
+#         data_dir = "./data/version_final_val/"+i+"/val.txt"
+#         save_name = "../../dataset/tumor_cls/cross_val_h5_dataset_baisC/"+i+"_2d_final_val_v2.h5"
+#         generate_H5_dataset_seg2cls_biasC(data_dir, save_name, pad=3)
+
+
 #######################
 # TEST
 #######################

@@ -253,15 +253,15 @@ def collect_mask():
 
 
 def split_data():
-    data_dir = "../data/version2/dataset_merged.txt"
+    data_dir = "../../data/version2/dataset_merged.txt"
     data = {"hemangioblastoma": 0, "angiocavernoma": 0, "III-IV_glioma": 0, "pilocytic_astrocytoma": 0}
     with open(data_dir, "r") as f:
         strs = f.readlines()
         random.shuffle(strs)
 
-        train_txt = open("../data/version2/train_merged.txt", "w")
-        val_txt = open("../data/version2/val_merged.txt", "w")
-        test_txt = open("../data/version2/test_merged.txt", "w")
+        train_txt = open("../../data/version2/train_merged.txt", "w")
+        val_txt = open("../../data/version2/val_merged.txt", "w")
+        test_txt = open("../../data/version2/test_merged.txt", "w")
         for idx, i in enumerate(strs):
             img_path = i.split("|")[0]
             if "hemangioblastoma" in i:  # 血管细胞瘤
@@ -286,19 +286,19 @@ def split_data():
         train_txt.close()
         val_txt.close()
         test_txt.close()
-    json.dump(data, open("../data/version2/stat.json", "w"))
+    json.dump(data, open("../../data/version2/stat.json", "w"))
 
 
 def split_data_2():
-    data_dir = "../data/version2/dataset_merged.txt"
+    data_dir = "../../data/version2/dataset_merged.txt"
     data = {"hemangioblastoma": 0, "angiocavernoma": 0, "III-IV_glioma": 0, "pilocytic_astrocytoma": 0}
     with open(data_dir, "r") as f:
         strs = f.readlines()
         random.shuffle(strs)
 
-        train_txt = open("../data/version2/train_merged_2.txt", "w")
-        val_txt = open("../data/version2/val_merged_2.txt", "w")
-        test_txt = open("../data/version2/test_merged_2.txt", "w")
+        train_txt = open("../../data/version2/train_merged_2.txt", "w")
+        val_txt = open("../../data/version2/val_merged_2.txt", "w")
+        test_txt = open("../../data/version2/test_merged_2.txt", "w")
         for idx, i in enumerate(strs):
             img_path = i.split("|")[0]
             if "hemangioblastoma" in i:  # 血管细胞瘤
@@ -323,11 +323,11 @@ def split_data_2():
         train_txt.close()
         val_txt.close()
         test_txt.close()
-    json.dump(data, open("../data/version2/stat.json", "w"))
+    json.dump(data, open("../../data/version2/stat.json", "w"))
 
 
 def split_data_3():
-    data_dir = "../data/version4/boceng_dataset.txt"
+    data_dir = "../../data/version4/boceng_dataset.txt"
     data = {"hemangioblastoma": 0, "angiocavernoma": 0, "III-IV_glioma": 0, "pilocytic_astrocytoma": 0}
     with open(data_dir, "r") as f:
         strs = f.readlines()
@@ -377,7 +377,7 @@ def split_data_3():
             elif "pilocytic_astrocytoma" in i:  # 星型细胞瘤
                 data["pilocytic_astrocytoma"] += 1
                 img_path += "|0"
-    json.dump(data, open("../data/version4/boceng_stat.json", "w"))
+    json.dump(data, open("../../data/version4/boceng_stat.json", "w"))
 
 # split_data_3()
 
